@@ -5,6 +5,9 @@ pub mod new_distributor;
 pub mod set_activation_point;
 pub mod set_admin;
 pub mod set_clawback_receiver;
+pub mod new_parent_account;
+pub mod fund_distributor_vaults;
+pub mod verify;
 
 pub use clawback::*;
 pub use close_claim_status::*;
@@ -15,3 +18,6 @@ pub use set_admin::*;
 pub use set_clawback_receiver::*;
 pub mod set_operator;
 pub use set_operator::*;
+pub use new_parent_account::*;
+pub use fund_distributor_vaults::*;
+pub use verify::*;

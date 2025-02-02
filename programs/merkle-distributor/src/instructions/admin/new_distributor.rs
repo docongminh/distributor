@@ -6,17 +6,33 @@ use crate::{
 };
 use anchor_lang::{account, context::Context, prelude::*, Accounts, Key, ToAccountInfo};
 use anchor_spl::token::{Mint, Token, TokenAccount};
+use bytemuck::cast_slice;
+use spl_account_compression::{
+    program::SplAccountCompression,
+    state::{
+        merkle_tree_get_size, ConcurrentMerkleTreeHeader, CONCURRENT_MERKLE_TREE_HEADER_SIZE_V1,
+    },
+    Node, Noop,
+};
 
 #[cfg(feature = "localnet")]
 const SECONDS_PER_DAY: i64 = 0;
 
+const MAX_ACC_PROOFS_SIZE: u32 = 17;
+
 #[cfg(not(feature = "localnet"))]
 const SECONDS_PER_DAY: i64 = 24 * 3600; // 24 hours * 3600 seconds
 
-#[derive(AnchorSerialize, AnchorDeserialize, InitSpace)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct NewDistributorParams {
     pub version: u64,
     pub root: [u8; 32],
+    pub max_depth: u32,
+    pub max_buffer_size: u32,
+    pub start_index: u32,
+    pub canopy_nodes: Vec<[u8; 32]>,
+    pub rightmost_leaf: [u8; 32],
+    pub rightmost_index: u32,
     pub total_claim: u64,
     pub max_num_nodes: u64,
     pub start_vesting_ts: i64,
@@ -30,6 +46,7 @@ pub struct NewDistributorParams {
     pub claim_type: u8,
     pub operator: Pubkey,
     pub locker: Pubkey,
+    pub parent_account: Pubkey,
 }
 
 impl NewDistributorParams {
@@ -127,6 +144,10 @@ pub struct NewDistributor<'info> {
     )]
     pub distributor: AccountLoader<'info, MerkleDistributor>,
 
+    #[account(zero)]
+    /// CHECK: This account must be all zeros
+    pub merkle_tree: UncheckedAccount<'info>,
+
     /// Base key of the distributor.
     pub base: Signer<'info>,
 
@@ -150,6 +171,12 @@ pub struct NewDistributor<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
 
+    /// The [Noop] program.
+    pub log_wrapper: Program<'info, Noop>,
+
+    /// The [SplAccountCompression] program.
+    pub compression_program: Program<'info, SplAccountCompression>,
+
     /// The [System] program.
     pub system_program: Program<'info, System>,
 
@@ -167,15 +194,15 @@ pub struct NewDistributor<'info> {
 ///     4. The clawback start is at least one day after end timestamp
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::result_large_err)]
-pub fn handle_new_distributor(
-    ctx: Context<NewDistributor>,
+pub fn handle_new_distributor<'c: 'info, 'info>(
+    ctx: Context<'_, '_, 'c, 'info, NewDistributor<'info>>,
     params: &NewDistributorParams,
 ) -> Result<()> {
     params.validate()?;
 
     let mut distributor = ctx.accounts.distributor.load_init()?;
 
-    distributor.bump = *ctx.bumps.get("distributor").unwrap();
+    distributor.bump = ctx.bumps.distributor;
     distributor.version = params.version;
     distributor.root = params.root;
     distributor.mint = ctx.accounts.mint.key();
@@ -200,6 +227,7 @@ pub fn handle_new_distributor(
     distributor.activation_type = params.activation_type;
     distributor.operator = params.operator;
     distributor.locker = params.locker;
+    distributor.parent_account = params.parent_account;
 
     // Note: might get truncated, do not rely on
     msg! {
@@ -219,6 +247,130 @@ pub fn handle_new_distributor(
             distributor.airdrop_bonus.vesting_duration,
             distributor.claim_type,
     };
+    let signer = distributor.signer();
+    let seeds = signer.seeds();
+    let authority = &[&seeds[..]];
+
+    drop(distributor);
+
+    // init merkle tree & append canopy nodes
+    check_canopy_size(&ctx, params.max_depth, params.max_buffer_size)?;
+
+    //
+    let cpi_ctx = CpiContext::new_with_signer(
+        ctx.accounts.compression_program.to_account_info(),
+        spl_account_compression::cpi::accounts::Initialize {
+            authority: ctx.accounts.distributor.to_account_info(),
+            merkle_tree: ctx.accounts.merkle_tree.to_account_info(),
+            noop: ctx.accounts.log_wrapper.to_account_info(),
+        },
+        authority,
+    );
+    spl_account_compression::cpi::prepare_batch_merkle_tree(
+        cpi_ctx,
+        params.max_depth,
+        params.max_buffer_size,
+    )?;
+
+    // Append canopy nodes into merkle tree
+    let append_cpi = CpiContext::new_with_signer(
+        ctx.accounts.compression_program.to_account_info(),
+        spl_account_compression::cpi::accounts::Modify {
+            authority: ctx.accounts.distributor.to_account_info(),
+            merkle_tree: ctx.accounts.merkle_tree.to_account_info(),
+            noop: ctx.accounts.log_wrapper.to_account_info(),
+        },
+        authority,
+    );
+    spl_account_compression::cpi::append_canopy_nodes(
+        append_cpi,
+        params.start_index,
+        params.canopy_nodes.clone(),
+    )?;
+
+    //
+    let init_with_root_cpi = CpiContext::new_with_signer(
+        ctx.accounts.compression_program.to_account_info(),
+        spl_account_compression::cpi::accounts::Modify {
+            authority: ctx.accounts.distributor.to_account_info(),
+            merkle_tree: ctx.accounts.merkle_tree.to_account_info(),
+            noop: ctx.accounts.log_wrapper.to_account_info(),
+        },
+        authority,
+    )
+    .with_remaining_accounts(ctx.remaining_accounts.to_vec());
+
+    spl_account_compression::cpi::init_prepared_tree_with_root(
+        init_with_root_cpi,
+        params.root,
+        params.rightmost_leaf,
+        params.rightmost_index,
+    )?;
 
     Ok(())
+}
+
+fn check_canopy_size(
+    ctx: &Context<NewDistributor>,
+    max_depth: u32,
+    max_buffer_size: u32,
+) -> Result<()> {
+    let merkle_tree_bytes = ctx.accounts.merkle_tree.data.borrow();
+
+    let (header_bytes, rest) = merkle_tree_bytes.split_at(CONCURRENT_MERKLE_TREE_HEADER_SIZE_V1);
+
+    let mut header = ConcurrentMerkleTreeHeader::try_from_slice(header_bytes)?;
+    header.initialize(
+        max_depth,
+        max_buffer_size,
+        &ctx.accounts.distributor.key(),
+        Clock::get()?.slot,
+    );
+
+    let merkle_tree_size = merkle_tree_get_size(&header)?;
+
+    let (_tree_bytes, canopy_bytes) = rest.split_at(merkle_tree_size);
+
+    let canopy = cast_slice::<u8, Node>(canopy_bytes);
+
+    let cached_path_len = get_cached_path_length(canopy, max_depth)?;
+
+    let required_canopy = max_depth.saturating_sub(MAX_ACC_PROOFS_SIZE);
+
+    require!(
+        (cached_path_len as u32) >= required_canopy,
+        ErrorCode::InvalidCanopySize
+    );
+
+    Ok(())
+}
+
+// Method is taken from account-compression Solana program
+#[inline(always)]
+fn get_cached_path_length(canopy: &[Node], max_depth: u32) -> Result<u32> {
+    // The offset of 2 is applied because the canopy is a full binary tree without the root node
+    // Size: (2^n - 2) -> Size + 2 must be a power of 2
+    let closest_power_of_2 = (canopy.len() + 2) as u32;
+    // This expression will return true if `closest_power_of_2` is actually a power of 2
+    if closest_power_of_2 & (closest_power_of_2 - 1) == 0 {
+        // (1 << max_depth) returns the number of leaves in the full merkle tree
+        // (1 << (max_depth + 1)) - 1 returns the number of nodes in the full tree
+        // The canopy size cannot exceed the size of the tree
+        if closest_power_of_2 > (1 << (max_depth + 1)) {
+            msg!(
+                "Canopy size is too large. Size: {}. Max size: {}",
+                closest_power_of_2 - 2,
+                (1 << (max_depth + 1)) - 2
+            );
+            return err!(ErrorCode::InvalidCanopySize);
+        }
+    } else {
+        msg!(
+            "Canopy length {} is not 2 less than a power of 2",
+            canopy.len()
+        );
+        return err!(ErrorCode::InvalidCanopySize);
+    }
+    // 1 is subtracted from the trailing zeros because the root is not stored in the canopy
+    Ok(closest_power_of_2.trailing_zeros() - 1)
 }

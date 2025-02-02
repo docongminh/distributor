@@ -105,6 +105,10 @@ export class MerkleTree {
     return root;
   }
 
+  getCanopyNodes(depth: number) {
+    return this._layers[depth]
+  }
+
   getHexRoot(): string {
     return this.getRoot().toString("hex");
   }

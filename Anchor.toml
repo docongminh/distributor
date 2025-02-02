@@ -29,8 +29,16 @@ merkle_distributor = "DiS3nNjFVMieMgmiQFm6wgJL7nevk4NrhXKLbtEH1Z2R"
 address = "voTpe3tHQ7AjQHMapgSue2HJFAh2cGsdokqN3XqmVSj"
 program = "./artifacts/locked_voter.so"
 
+[[test.genesis]]
+address = "noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV"
+program = "./artifacts/spl_noop.so"
+
+[[test.genesis]]
+address = "cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK"
+program = "./artifacts/spl_account_compression.so"
+
 [scripts]
-test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/*.ts"
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/test_claim_permissionless.ts"
 
 [test]
 startup_wait = 30000

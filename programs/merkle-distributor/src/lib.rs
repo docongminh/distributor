@@ -38,11 +38,23 @@ pub mod merkle_distributor {
 
     /// ADMIN FUNCTIONS ////
     #[allow(clippy::result_large_err)]
-    pub fn new_distributor(
-        ctx: Context<NewDistributor>,
+    pub fn new_parent_account(ctx: Context<NewParentAccount>) -> Result<()> {
+        handle_new_parent_account(ctx)
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn new_distributor<'c: 'info, 'info>(
+        ctx: Context<'_, '_, 'c, 'info, NewDistributor<'info>>,
         params: NewDistributorParams,
     ) -> Result<()> {
         handle_new_distributor(ctx, &params)
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub fn fund_distributors_vault<'c: 'info, 'info>(
+        ctx: Context<'_, '_, 'c, 'info, FundDistributorsVault<'info>>,
+    ) -> Result<()> {
+        handle_fund_distributors_vault(ctx)
     }
 
     /// only available in test phase
@@ -101,19 +113,19 @@ pub mod merkle_distributor {
         handle_claim_locked(ctx)
     }
 
-    #[allow(clippy::result_large_err)]
-    pub fn new_claim_and_stake(
-        ctx: Context<NewClaimAndStake>,
-        amount_unlocked: u64,
-        amount_locked: u64,
-        proof: Vec<[u8; 32]>,
-    ) -> Result<()> {
-        handle_new_claim_and_stake(ctx, amount_unlocked, amount_locked, proof)
-    }
+    // #[allow(clippy::result_large_err)]
+    // pub fn new_claim_and_stake(
+    //     ctx: Context<NewClaimAndStake>,
+    //     amount_unlocked: u64,
+    //     amount_locked: u64,
+    //     proof: Vec<[u8; 32]>,
+    // ) -> Result<()> {
+    //     handle_new_claim_and_stake(ctx, amount_unlocked, amount_locked, proof)
+    // }
 
-    #[allow(clippy::result_large_err)]
-    pub fn claim_locked_and_stake(ctx: Context<ClaimLockedAndStake>) -> Result<()> {
-        handle_claim_locked_and_stake(ctx)
-    }
+    // #[allow(clippy::result_large_err)]
+    // pub fn claim_locked_and_stake(ctx: Context<ClaimLockedAndStake>) -> Result<()> {
+    //     handle_claim_locked_and_stake(ctx)
+    // }
     // END USER FUNCTIONS //
 }

@@ -17,6 +17,8 @@ import {
   Transaction,
 } from "@solana/web3.js";
 
+import { createAllocTreeIx } from "../../node_modules/@solana/spl-account-compression/dist/cjs/src";
+
 export * from "./asserter";
 
 export async function createAndFundWallet(
@@ -147,29 +149,54 @@ export const wrapSOL = async (
   await sendAndConfirmTransaction(connection, transaction, [payer]);
 };
 
-
 export function getRandomInt(min, max) {
   const minCeiled = Math.ceil(min);
   const maxFloored = Math.floor(max);
   return Math.floor(Math.random() * (maxFloored - minCeiled) + minCeiled); // The maximum is exclusive and the minimum is inclusive
 }
 
+export const getOrCreateAssociatedTokenAccountWrap = async (
+  connection: web3.Connection,
+  payer: web3.Keypair,
+  tokenMint: web3.PublicKey,
+  owner: web3.PublicKey
+) => {
+  return (
+    await getOrCreateAssociatedTokenAccount(
+      connection,
+      payer,
+      tokenMint,
+      owner,
+      true,
+      "confirmed",
+      {
+        commitment: "confirmed",
+      },
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    )
+  ).address;
+};
 
-
-
-export const getOrCreateAssociatedTokenAccountWrap = async (connection: web3.Connection, payer: web3.Keypair, tokenMint: web3.PublicKey, owner: web3.PublicKey) => {
-  return (await getOrCreateAssociatedTokenAccount(
+export const allocateMerkleTreeAccount = async (
+  connection: web3.Connection,
+  payer: web3.Keypair,
+  maxBufferSize: number,
+  maxDepth: number,
+  canopyDepth: number
+) => {
+  const cmtKeypair = Keypair.generate();
+  const allocAccountIx = await createAllocTreeIx(
     connection,
-    payer,
-    tokenMint,
-    owner,
-    true,
-    "confirmed",
-    {
-      commitment: "confirmed",
-    },
-    TOKEN_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  )).address;
-}
+    cmtKeypair.publicKey,
+    payer.publicKey,
+    { maxBufferSize, maxDepth },
+    canopyDepth
+  );
 
+  const tx = new Transaction().add(allocAccountIx);
+
+  await sendAndConfirmTransaction(connection, tx, [payer, cmtKeypair]);
+
+  return cmtKeypair.publicKey;
+};

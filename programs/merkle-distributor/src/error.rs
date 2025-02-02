@@ -59,4 +59,10 @@ pub enum ErrorCode {
     InvalidLocker,
     #[msg("Escrow is not max lock")]
     EscrowIsNotMaxLock,
+    #[msg("Invalid remaining accounts")]
+    InvalidRemainingAccounts,
+    #[msg("Invalid account")]
+    InvalidAccount,
+    #[msg("Canopy size should be set bigger for this tree")]
+    InvalidCanopySize,
 }

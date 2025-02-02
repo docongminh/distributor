@@ -59,6 +59,10 @@ export class BalanceTree {
     return this._tree.getRoot();
   }
 
+  getCanopyNodes(depth: number) {
+    return this._tree.getCanopyNodes(depth)
+  }
+
   getProof(account: web3.PublicKey, amountUnlocked: BN, amountLocked: BN): Buffer[] {
     return this._tree.getProof(BalanceTree.toNode(account, amountUnlocked, amountLocked));
   }
